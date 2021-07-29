@@ -13,12 +13,14 @@ type OutputLine interface {
 // A SoftPWM is a software pulse-width modulation controller which
 // controls exactly one OutputLine
 type SoftPWM struct {
-	dutyCycle uint32
+	dutyCycle int
 	stop      chan struct{}
 	done      chan struct{}
 	l         OutputLine
 	running   bool
 	mu        sync.Mutex
+	mark      *time.Timer
+	space     *time.Timer
 }
 
 // New creates a new SoftPWM. The provided output line is turned off
@@ -39,8 +41,7 @@ func (p *SoftPWM) Set(v int) {
 	if v < 0 || v > 1000 {
 		panic("pwm value out of bounds")
 	}
-	//atomic.StoreUint32(&p.dutyCycle, uint32(v))
-	p.dutyCycle = uint32(v)
+	p.dutyCycle = v
 	p.mu.Lock()
 	if !p.running {
 		go p.run()
@@ -60,25 +61,24 @@ func (p *SoftPWM) Off() {
 
 func (p *SoftPWM) run() {
 	p.running = true
-	t := time.NewTicker(100 * time.Microsecond)
-	//t := time.NewTicker(1 * time.Millisecond)
-
-	var i uint32
+	p.mark = time.NewTimer(time.Duration(p.dutyCycle) * 100 * time.Microsecond)
+	p.space = time.NewTimer((1000 - time.Duration(p.dutyCycle)) * 100 * time.Microsecond)
+	<-p.mark.C
+	<-p.space.C
 
 LOOP:
 	for {
+		p.l.SetValue(1)
+		p.mark.Reset(time.Duration(p.dutyCycle) * 100 * time.Microsecond)
+		<-p.mark.C
+		p.l.SetValue(0)
+		p.space.Reset((1000 - time.Duration(p.dutyCycle)) * 100 * time.Microsecond)
+		<-p.space.C
 		select {
-		case <-t.C:
-			//v := atomic.LoadUint32(&p.dutyCycle)
-			if i < p.dutyCycle {
-				p.l.SetValue(1)
-			} else {
-				p.l.SetValue(0)
-			}
-			i = (i + 1) % 1000
 		case <-p.stop:
 			p.running = false
 			break LOOP
+		default:
 		}
 	}
 	p.l.SetValue(0)
